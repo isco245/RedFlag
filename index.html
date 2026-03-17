@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+<meta charset="UTF-8">
+<title>Quiz Valorant</title>
+<link rel="stylesheet" href="css/style.css">
+<script src="js/script.js" defer></script>
+</head>
+
+<body>
+
+<!-- TOP LEFT CONTROLS -->
+<div id="top-controls">
+  <button id="theme-toggle">🌙</button>
+  <button id="login-toggle">Connexion</button>
+</div>
+
+<!-- écran de chargement -->
+<div id="loader">
+  <div class="spinner"></div>
+  <p>Chargement...</p>
+</div>
+
+<!-- écran de connexion -->
+<div id="login-screen" class="overlay">
+  <div class="overlay-content">
+    <span id="login-close" class="close-btn">×</span>
+    <h2>Connexion</h2>
+    <div id="login-error" class="error-msg"></div>
+    <input type="text" id="username" placeholder="Identifiant">
+    <input type="password" id="password" placeholder="Mot de passe">
+    <button id="login-btn">Connexion</button>
+  </div>
+</div>
+
+<!-- écran d'avertissement pour quiz hard -->
+<div id="warning-screen" class="overlay">
+  <div class="overlay-content">
+    <h2>⚠️ Avertissement</h2>
+    <p>Ce quiz est HARD ! Es-tu sûr de vouloir continuer ?</p>
+    <div class="warning-buttons">
+      <button id="proceed-hard">Valider</button>
+      <button id="cancel-hard">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- quiz principal -->
+<div class="grid" id="main-content">
+  <div id="quiz">
+    <h1>Quiz Valorant</h1>
+    <div class="progress-bar">
+      <div id="progress-bar-fill"></div>
+    </div>
+    <p id="progress"></p>
+    <hr>
+    <p id="question"></p>
+    <div class="buttons">
+      <button class="choice" id="btn0"><span id="choice0"></span></button>
+      <button class="choice" id="btn1"><span id="choice1"></span></button>
+      <button class="choice" id="btn2"><span id="choice2"></span></button>
+      <button class="choice" id="btn3"><span id="choice3"></span></button>
+    </div>
+    <div class="actions">
+      <button id="validate">Valider</button>
+      <button id="next" disabled>Suivant</button>
+    </div>
+  </div>
+</div>
+
+<div id="signature">Travaille original de Maxence et d'Aurélien ®</div>
+
+</body>
+</html>
