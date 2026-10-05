@@ -53,6 +53,8 @@ h1{font-size:1.25rem;font-weight:800;letter-spacing:-.025em;margin:0}
 .b:focus-visible,.pad:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .b.on{background:var(--accent);border-color:var(--accent);color:#111;box-shadow:none}
 .b:active{transform:scale(.97)}
+.b:disabled{opacity:.4;cursor:not-allowed}
+.b.hit{border-color:var(--accent)!important;box-shadow:0 0 10px var(--accent)}
 .tabs{
  display:flex;align-items:center;gap:4px;margin-bottom:12px;padding:5px;
  background:var(--surface);border:1px solid var(--line);border-radius:9px
@@ -143,7 +145,9 @@ input[type=color]{width:34px;height:28px;border:1px solid var(--line2);border-ra
   <button class="b" data-m="2">Game</button>
   <button class="b" data-m="3">Lights</button>
   <button class="b" data-m="4">Samples</button>
+  <button class="b" data-m="5">Live</button>
   <label class="row tempo">BPM <input type="range" id="bp" min="70" max="160" value="110" aria-label="Tempo"> <strong id="bl">110</strong></label>
+  <button class="b" id="met" aria-pressed="false" title="Métronome">♩ Métronome</button>
 </div>
 <div class="instrument">
   <section class="deck" aria-label="Surface de jeu">
@@ -185,6 +189,12 @@ function lead(n,t=AC.currentTime,d=.5){tone(nf(n),t,d,'triangle',.35);tone(nf(n)
 function later(t,fn){setTimeout(fn,Math.max(0,(t-AC.currentTime)*1000))}
 function clockStart(onStep){clockStop();ac();let n=0,t=AC.currentTime+.05;ck=timer(()=>{if(t<AC.currentTime-.2)t=AC.currentTime+.05;while(t<AC.currentTime+.12){onStep(n++,t);t+=60/bpm/2}},25)}
 function clockStop(){ck&&ck.stop();ck=null}
+let met=null,mn=0,mt=0;
+function metStart(t0,n0){met&&met.stop();ac();mt=t0||AC.currentTime+.06;mn=n0||0;
+met=timer(()=>{if(mt<AC.currentTime-.2)mt=AC.currentTime+.05;
+while(mt<AC.currentTime+.12){const acc=(((mn%4)+4)%4)===0,t=mt;tone(acc?1600:1000,t,.035,'square',acc?.09:.055);
+later(t,()=>{const b=$('#met');if(b){b.classList.add('hit');setTimeout(()=>b.classList.remove('hit'),90)}});mt+=60/bpm;mn++}},25)}
+function metStop(){met&&met.stop();met=null}
 /* ---------- sons du sampler : batterie, basse fuzz, synthé psyché, claviers ---------- */
 const PM=[0,3,5,7,10],PN=(n,b)=>b*Math.pow(2,(12*Math.floor(n/5)+PM[n%5])/12);
 function wet(g,a){const w=AC.createGain();w.gain.value=a;g.connect(w);w.connect(FX)}
@@ -255,10 +265,11 @@ drag(r,c){if(!ck){fr[cf][r*8+c]=dv;render()}},
 step(s,t){if(muse){if(s%4==0)drum(0,t);if(s%4==2)drum(1,t);if(s%2)drum(2,t);if(s%8==0)tone(55,t,.4,'square',.2,50)}later(t,()=>{if(ck){anim=s%fr.length;render()}})},
 leave(){anim=-1}};
 /* ---------- mes sons ---------- */
-const smp=Array(64).fill(null);let sel=0,fxs=[],imsg='',cd=null;
-const CF={split:true,segLen:5,colMode:'auto',main:[106,76,255],fxk:0,fxCol:'pad',fxDur:800};
+const BK=[0,1,2].map(()=>Array(64).fill(null));let smp=BK[0],bank=0;const K=i=>bank*64+i;
+let sel=0,fxs=[],imsg='';
+const CF={split:true,segLen:5,game:true,diff:1,ld:1,off:0,colMode:'auto',main:[106,76,255],fxk:0,fxCol:'pad',fxDur:800};
 try{Object.assign(CF,JSON.parse(localStorage.getItem('padcfg')||'{}'))}catch(e){}
-CF.segLen=Math.min(8,Math.max(2,+CF.segLen||5));
+CF.segLen=Math.min(8,Math.max(2,+CF.segLen||5));if(!(CF.fxk>=0&&CF.fxk<=4))CF.fxk=0;CF.diff=[0,1,2].includes(+CF.diff)?+CF.diff:1;CF.ld=[0,1,2].includes(+CF.ld)?+CF.ld:1;CF.off=Math.max(-150,Math.min(150,+CF.off||0));
 const saveCf=()=>{try{localStorage.setItem('padcfg',JSON.stringify(CF))}catch(e){}};
 const h2r=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16)),r2h=c=>'#'+c.map(v=>Math.round(v).toString(16).padStart(2,'0')).join('');
 const sc=(c,k)=>c.map(v=>Math.min(255,v*k));
@@ -269,20 +280,46 @@ const req=r=>new Promise((ok,ko)=>{r.onsuccess=()=>ok(r.result);r.onerror=ko});
 let DB;const idb=()=>DB||(DB=new Promise((ok,ko)=>{const r=indexedDB.open('padstudio',1);r.onupgradeneeded=()=>r.result.createObjectStore('s');r.onsuccess=()=>ok(r.result);r.onerror=()=>{DB=null;ko(r.error)}}));
 async function dbPut(k,v){try{const d=await idb(),s=d.transaction('s','readwrite').objectStore('s');v?s.put(v,k):s.delete(k)}catch(e){}}
 const rawKey=g=>'raw:'+g;
-const meta=i=>{const s=smp[i];return{name:s.name,bn:s.bn,gid:s.gid,start:s.start,dur:s.dur,col:s.col}};
-function release(i){const g=smp[i]&&smp[i].gid;smp[i]=null;dbPut(i,null);if(g&&!smp.some(s=>s&&s.gid===g))dbPut(rawKey(g),null)}
+const metaOf=s=>({name:s.name,bn:s.bn,gid:s.gid,start:s.start,dur:s.dur,col:s.col,pk:s.pk,bpm:s.bpm,ph:s.ph}),meta=i=>metaOf(smp[i]);
+function release(i){const g=smp[i]&&smp[i].gid;smp[i]=null;GS={};dbPut(K(i),null);if(g&&!BK.some(b=>b.some(s=>s&&s.gid===g)))dbPut(rawKey(g),null)}
 async function dbLoad(){try{const d=await idb(),s=d.transaction('s').objectStore('s'),[ks,vs]=await Promise.all([req(s.getAllKeys()),req(s.getAll())]),bases={};
 for(let n=0;n<ks.length;n++)if(typeof ks[n]==='string'){try{bases[ks[n].slice(4)]=await dec(vs[n].raw.slice(0))}catch(e){}}
-for(let n=0;n<ks.length;n++){if(typeof ks[n]!=='number')continue;const v=vs[n],k=ks[n];try{
-if(v.gid){if(bases[v.gid])smp[k]={name:v.name,bn:v.bn||v.name,gid:v.gid,start:v.start,dur:v.dur,col:v.col,buf:bases[v.gid]}}
-else{const gid='o'+k;smp[k]={name:v.name,bn:v.name,gid,buf:await dec(v.raw.slice(0))};dbPut(rawKey(gid),{raw:v.raw});dbPut(k,meta(k))}}catch(e){}}
+for(let n=0;n<ks.length;n++){if(typeof ks[n]!=='number')continue;const v=vs[n],k=ks[n],T=BK[k>>6],j=k&63;if(!T)continue;try{
+if(v.gid){if(bases[v.gid])T[j]={name:v.name,bn:v.bn||v.name,gid:v.gid,start:v.start,dur:v.dur,col:v.col,pk:v.pk,bpm:v.bpm,ph:v.ph,buf:bases[v.gid]}}
+else{const gid='o'+k;T[j]={name:v.name,bn:v.name,gid,buf:await dec(v.raw.slice(0))};dbPut(rawKey(gid),{raw:v.raw});dbPut(k,metaOf(T[j]))}}catch(e){}}
 setPanel();render()}catch(e){}}
 const freeFrom=i=>{while(i<64&&smp[i])i++;return i};
-function layout(buf,gid,bn,pos){const L=CF.split&&CF.segLen>0?CF.segLen:0,n=L?Math.max(1,Math.ceil(buf.duration/L-1e-6)):1;let last=pos,cut=0;
-for(let k=0;k<n;k++){const p=k?freeFrom(last+1):pos;if(p>63){cut=n-k;break}if(smp[p])release(p);
-smp[p]=n>1?{name:bn+' '+(k+1),bn,gid,buf,start:k*L,dur:Math.min(L,buf.duration-k*L)}:{name:bn,bn,gid,buf};dbPut(p,meta(p));last=p}
+function analyze(buf){if(buf._an)return buf._an;const H=Math.max(32,Math.floor(buf.sampleRate*.01)),N=Math.floor(buf.length/H),e=new Float32Array(N),o=new Float32Array(N),C=buf.numberOfChannels;
+for(let c=0;c<C;c++){const d=buf.getChannelData(c);for(let n=0;n<N;n++){let a=0;const b=n*H;for(let k=b;k<b+H;k+=4)a+=d[k]*d[k];e[n]+=a/(H/4)}}
+for(let n=0;n<N;n++)e[n]=Math.sqrt(e[n]/C);
+let mx=0,sum=0;for(let n=1;n<N;n++){let m=0,c=0;for(let k=Math.max(0,n-50);k<n;k+=5){m+=e[k];c++}o[n]=Math.max(0,e[n]-m/c);mx=Math.max(mx,o[n]);sum+=o[n]}
+const mean=sum/Math.max(1,N),ev=[];
+for(let n=2;n<N-2;n++)if(o[n]>=o[n-1]&&o[n]>=o[n+1]&&o[n]>mean*2.2&&o[n]>mx*.12){const t=n*.01,w=o[n]/mx,l=ev[ev.length-1];if(l&&t-l.t<.4){if(w>l.w)ev[ev.length-1]={t,w}}else ev.push({t,w})}
+let bpm=0,ph=0;
+if(N>400&&mx>0){const lo=Math.floor(6000/185),hi=Math.ceil(6000/75),ac2=new Float32Array(hi*2+2);
+for(let l=lo;l<=hi*2;l++){let a=0;for(let n=0;n+l<N;n++)a+=o[n]*o[n+l];ac2[l]=a/(N-l)}
+let bl=lo,bv=-1;for(let l=lo;l<=hi;l++){const v=ac2[l]+.5*ac2[2*l];if(v>bv){bv=v;bl=l}}
+const a0=ac2[bl-1],a1=ac2[bl],a2=ac2[bl+1],dn=a0-2*a1+a2,lf=bl+(dn?Math.max(-1,Math.min(1,.5*(a0-a2)/dn)):0);
+bpm=6000/lf;while(bpm<80)bpm*=2;while(bpm>160)bpm/=2;
+const T=6000/bpm;let bs=-1;for(let f=0;f<T;f+=.5){let a=0;for(let x=f;x<N;x+=T)a+=o[Math.round(x)]||0;if(a>bs){bs=a;ph=f*.01}}
+bpm=Math.round(bpm*10)/10}
+let em=0;for(let n=0;n<N;n++)em+=e[n];return buf._an={ev,bpm,ph,env:e,mean:em/Math.max(1,N)}}
+function plan(buf){const[mn,mxl]=[[6,8],[4,6],[2,4]][CF.diff],an=analyze(buf),ev=an.ev,dur=buf.duration,sg=[];let pos=0;
+while(dur-pos>mxl+.01){const c=ev.filter(e=>e.t>=pos+mn&&e.t<=pos+mxl);let cut;
+if(c.length){let r=Math.random()*c.reduce((a,e)=>a+e.w,0);cut=c[c.length-1].t;for(const e of c){r-=e.w;if(r<=0){cut=e.t;break}}cut-=.03}
+else cut=pos+mn+Math.random()*(mxl-mn);
+sg.push({start:pos,dur:cut-pos});pos=cut}
+sg.push({start:pos,dur:dur-pos});
+for(const g of sg){g.bpm=an.bpm;g.ph=an.ph;g.pk=ev.filter(e=>e.w>.3&&e.t>g.start+.2&&e.t<g.start+g.dur-.1).map(e=>[+(e.t-g.start).toFixed(2),+e.w.toFixed(2)])}
+return sg}
+function far(prev){const fr=[];for(let q=0;q<64;q++)if(!smp[q])fr.push(q);if(!fr.length)return-1;
+const D=q=>Math.max(Math.abs((q>>3)-(prev>>3)),Math.abs((q&7)-(prev&7))),ok=fr.filter(q=>D(q)>=3);
+if(ok.length)return ok[Math.random()*ok.length|0];const m=Math.max(...fr.map(D)),b=fr.filter(q=>D(q)===m);return b[Math.random()*b.length|0]}
+function layout(buf,gid,bn,pos){const sg=CF.split?plan(buf):[{start:0,dur:buf.duration,pk:[],bpm:analyze(buf).bpm,ph:analyze(buf).ph}],n=sg.length;let last=pos,cut=0;GS={};
+for(let k=0;k<n;k++){const p=k?far(last):pos;if(p<0||p>63){cut=n-k;break}if(smp[p])release(p);
+smp[p]=n>1?{name:bn+' '+(k+1),bn,gid,buf,start:sg[k].start,dur:sg[k].dur,pk:sg[k].pk,bpm:sg[k].bpm,ph:sg[k].ph}:{name:bn,bn,gid,buf,bpm:sg[k].bpm,ph:sg[k].ph};dbPut(K(p),meta(p));last=p}
 return{last,cut}}
-async function importFiles(fs,start){imsg='';let pos=freeFrom(start),bad=0,cut=0,n=0;if(pos>63)pos=freeFrom(0);
+async function importFiles(fs,start){gclear();imsg='';let pos=freeFrom(start),bad=0,cut=0,n=0;if(pos>63)pos=freeFrom(0);
 for(const f of fs){if(!/^audio/.test(f.type)&&!/\.(wav|mp3|ogg|m4a|flac|aac)$/i.test(f.name))continue;
 try{const raw=await f.arrayBuffer(),buf=await dec(raw.slice(0));if(pos>63){cut++;continue}
 const gid=Date.now().toString(36)+Math.random().toString(36).slice(2,5),r=layout(buf,gid,f.name.replace(/\.[^.]+$/,''),pos);
@@ -291,70 +328,170 @@ catch(e){bad++;imsg='Impossible de lire '+f.name}}
 if(cut)imsg=cut+' morceau(x) sans place : la grille ne compte que 64 pads.';else if(n&&!bad)imsg=n+' son'+(n>1?'s':'')+' importé'+(n>1?'s':'')+'.';
 setPanel();render()}
 function resplit(){const s=smp[sel];if(!s)return;const g=s.gid,idx=smp.map((p,i)=>p&&p.gid===g?i:-1).filter(i=>i>=0);
-idx.forEach(i=>{smp[i]=null;dbPut(i,null)});const r=layout(s.buf,g,s.bn,idx[0]);
+idx.forEach(i=>{smp[i]=null;dbPut(K(i),null)});const r=layout(s.buf,g,s.bn,idx[0]);
 if(r.cut)imsg=r.cut+' morceau(x) sans place.';setPanel();render()}
 function play(i,t=AC.currentTime){const s=smp[i];if(!s)return;const o=AC.createBufferSource(),g=AC.createGain(),d=s.dur||s.buf.duration-(s.start||0);
-o.buffer=s.buf;g.gain.setValueAtTime(1,t+Math.max(0,d-.03));g.gain.linearRampToValueAtTime(0,t+d);o.connect(g);g.connect(MB);o.start(t,s.start||0,d);cd={t0:performance.now()+(t-AC.currentTime)*1000,d:d*1000};render()}
+o.buffer=s.buf;g.gain.setValueAtTime(1,t+Math.max(0,d-.03));g.gain.linearRampToValueAtTime(0,t+d);o.connect(g);g.connect(MB);o.start(t,s.start||0,d)}
 function padInfo(){const s=smp[sel],n=smp.filter(Boolean).length;return`Pad ${Math.floor(sel/8)+1}-${sel%8+1} : <b>${s?esc(s.name):'vide'}</b>${s&&s.dur?' · de '+fmt(s.start)+' à '+fmt(s.start+s.dur):''} · ${n} pad${n>1?'s':''} chargé${n>1?'s':''}`}
 function myInfo(){const e=$('#pi');if(e)e.innerHTML=padInfo();const c=$('[data-cfg=padcol]');if(c)c.value=r2h(base(sel))}
+let GS={},gt=[],gmm='',gmu=0,GP=null,sp=[],lastB=-1,bcol=[255,255,255],hitT=0,pkT=0,pkS=0;
+const gids=()=>[...new Set(smp.filter(Boolean).map(s=>s.gid))];
+const grp=g=>smp.map((s,i)=>s&&s.gid===g?i:-1).filter(i=>i>=0).sort((a,b)=>(smp[a].start||0)-(smp[b].start||0));
+const gs=g=>GS[g]||(GS[g]={n:0,st:'wait',tw:performance.now()});
+function gmsg(t,ms=2500){gmm=t;gmu=performance.now()+ms}
+function gclear(){gt.forEach(clearTimeout);gt=[];GS={};GP=null;sp=[]}
+function gstat(){const g=(smp[sel]&&smp[sel].gid)||gids()[0];if(!g)return'Importe une musique pour jouer.';const q=gs(g),n=grp(g).length;return q.st==='play'?`Partie ${q.n+1}/${n} en cours…`:`Appuie sur le pad allumé · partie ${q.n+1}/${n}`}
+function ad(i,c,a){const f=frame[i];frame[i]=[Math.max(f[0],c[0]*a),Math.max(f[1],c[1]*a),Math.max(f[2],c[2]*a)]}
+const gau=(d,w)=>Math.exp(-d*d/(2*w*w));
+function ring(ix,rd,a,col,w=.6){if(a<.02)return;const tr=ix>>3,tc=ix&7;for(let i=0;i<64;i++){const g=a*gau(Math.hypot((i>>3)-tr,(i&7)-tc)-rd,w);if(g>.03)ad(i,col,g)}}
+function wv(ix,fr,it){ring(ix,fr*7,Math.pow(1-fr,1.5)*it,base(ix))}
+function conv(now){const G=GP,el=(now-G.t0)/1000,pg=Math.min(1,el/G.d),bf=((G.s.start||0)+el-G.ph)/G.T,bi=Math.floor(bf),fr=bf-bi,tr=G.nx>>3,tc=G.nx&7,tcol=base(G.nx),lc=tcol.map(v=>v+(255-v)*.35);
+if(bi!==lastB){lastB=bi;const k=1+(Math.random()<.5?1:0)+(pg>.6?1:0);for(let j=0;j<k;j++)sp.push({r:Math.random()*7,c:Math.random()*7,t0:now,du:G.T*1000*(1.5+Math.random()*1.5)})}
+wv(G.nx,fr,.3+.5*pg);
+for(const p of sp){const u=(now-p.t0)/p.du;if(u>=1){hitT=now;continue}
+for(let j=0;j<3;j++){const v=Math.max(0,u-j*.07),e=v*v,pr=p.r+(tr-p.r)*e,pc=p.c+(tc-p.c)*e,a=.55*(1-j*.3)*Math.min(1,u*6);
+for(let i=0;i<64;i++){const g=a*gau(Math.hypot((i>>3)-pr,(i&7)-pc),.55);if(g>.04)ad(i,lc,g)}}}
+sp=sp.filter(p=>now-p.t0<p.du);
+const pu=now-pkT;if(pu<320){const u=pu/320;ring(G.nx,u*8,(1-u)*(.45+.4*pkS),tcol,.7)}
+if(now-hitT<160)ad(G.nx,tcol,(1-(now-hitT)/160)*.7);
+ad(G.nx,tcol,(.12+.4*pg)*(.75+.25*Math.cos(fr*6.283)))}
+function gstart(g,i){const s=smp[i],q=gs(g),d=s.dur||s.buf.duration-(s.start||0),now=performance.now(),ar=grp(g),nx=ar[(q.n+1)%ar.length];
+if(s.bpm==null){const an=analyze(s.buf);s.bpm=an.bpm||0;s.ph=an.ph||0;dbPut(K(i),meta(i))}
+q.st='play';play(i);
+if(s.bpm){bpm=s.bpm;$('#bp').value=Math.round(bpm);$('#bl').textContent=Math.round(bpm)}
+const T=60/bpm,ph=s.bpm?s.ph:0,st0=s.start||0;GP={g,i,nx,t0:now,d,s,T,ph};sp=[];lastB=-1;
+if(met){const idx=Math.ceil((st0-ph)/T-1e-6);metStart(AC.currentTime+Math.max(0,ph+idx*T-st0),idx)}
+(s.pk||[]).forEach(([tp,w])=>gt.push(setTimeout(()=>{pkT=performance.now();pkS=w;render()},tp*1000)));
+gt.push(setTimeout(()=>{q.n++;if(q.n>=grp(g).length){q.n=0;gmsg('Terminé ! On recommence.')}q.st='wait';q.tw=performance.now();GP=null;sp=[];render()},d*1000));myInfo();render()}
 const opt=(v,t,cur)=>`<option value="${v}" ${cur==v?'selected':''}>${t}</option>`;
 const MY={
-panel:()=>{const s=smp[sel],n=smp.filter(Boolean).length,pc=r2h(base(sel));return`<h2>Samples</h2><p>Importe un son : il est découpé en morceaux de 2 à 8 s, un par pad. Appuie sur un pad pour le jouer et le sélectionner.</p>
+panel:()=>{const s=smp[sel],n=smp.filter(Boolean).length,pc=r2h(base(sel));return`<h2>Samples</h2><p>Choisis Son 1, 2 ou 3, puis importe une musique : elle est découpée aux pics et aux drops (2 à 8 s selon la difficulté). Un seul pad s'allume : appuie pour lancer le son. Pendant la lecture, des étincelles filent vers le pad suivant, qui émet des vagues au rythme (BPM) de la chanson au rythme (BPM) de la chanson : appuie dessus pour continuer.</p>
+<div class="row">${BK.map((b,k)=>`<button class="b ${bank===k?'on':''}" data-act="bank" data-v="${k}">Son ${k+1}${b.some(Boolean)?' ●':''}</button>`).join('')}</div>
 <div class="row"><button class="b" data-act="imp">Importer des sons</button><button class="b" data-act="rm">Retirer ce pad</button><button class="b" data-act="rmall">Vider tous les pads</button></div><input type="file" id="fi" accept="audio/*" multiple hidden>
-<p id="pi">${padInfo()}</p><p id="cd" style="min-height:1.3em;margin:-4px 0 8px;color:var(--accent);font-variant-numeric:tabular-nums"></p>${imsg?'<p>'+esc(imsg)+'</p>':''}
+<p id="pi">${padInfo()}</p><p id="gm" style="min-height:1.3em;margin:0 0 8px;color:var(--ink);font-weight:650"></p>${imsg?'<p>'+esc(imsg)+'</p>':''}
 <h2>Découpage</h2>
-<div class="row"><label><input type="checkbox" data-cfg="split" ${CF.split?'checked':''}> Découper à l'import</label><label>Durée d'un morceau <input type="range" data-cfg="segLen" min="2" max="8" step="0.5" value="${CF.segLen}"><output>${CF.segLen} s</output></label><button class="b" data-act="resplit">Redécouper ce son</button></div>
+<div class="row"><label><input type="checkbox" data-cfg="split" ${CF.split?'checked':''}> Découper aux pics</label><label><input type="checkbox" data-cfg="game" ${CF.game?'checked':''}> Mode jeu</label><label>Difficulté <select data-cfg="diff">${['Facile · 6 à 8 s','Normal · 4 à 6 s','Difficile · 2 à 4 s, 2 s pour appuyer'].map((t,i)=>opt(i,t,CF.diff)).join('')}</select></label><button class="b" data-act="resplit">Redécouper ce son</button></div>
 <h2>Couleurs</h2>
 <div class="row"><label>Pads <select data-cfg="colMode">${opt('auto','Arc-en-ciel',CF.colMode)}${opt('main','Couleur principale',CF.colMode)}</select></label><label>Principale <input type="color" data-cfg="main" value="${r2h(CF.main)}"></label></div>
 <div class="row"><label>Ce pad <input type="color" data-cfg="padcol" value="${pc}"></label><button class="b" data-act="grp">Appliquer à tout le son</button><button class="b" data-act="padreset">Réinitialiser</button></div>
 <h2>Effet</h2>
-<div class="row"><label>Animation <select data-cfg="fxk">${['Onde','Croix','Arc-en-ciel','Flash','Aléatoire'].map((t,i)=>opt(i,t,CF.fxk)).join('')}</select></label><label>Couleur <select data-cfg="fxCol">${opt('pad','Celle du pad',CF.fxCol)}${opt('main','Principale',CF.fxCol)}${opt('white','Blanc',CF.fxCol)}</select></label></div>
-<div class="row"><label>Vitesse du cycle <input type="range" data-cfg="fxDur" min="200" max="2000" step="50" value="${CF.fxDur}"><output>${CF.fxDur} ms</output></label></div>${lpBar()}`},
+<div class="row"><label>Animation <select data-cfg="fxk">${['Onde rebond','Croix','Arc-en-ciel','Flash','Aléatoire'].map((t,i)=>opt(i,t,CF.fxk)).join('')}</select></label><label>Couleur <select data-cfg="fxCol">${opt('pad','Celle du pad',CF.fxCol)}${opt('main','Principale',CF.fxCol)}${opt('white','Blanc',CF.fxCol)}</select></label></div>
+<div class="row"><label>Vitesse du cycle <input type="range" data-cfg="fxDur" min="200" max="2000" step="50" value="${CF.fxDur}"><output>${CF.fxDur} ms</output></label></div>`},
 draw(){const now=performance.now(),P=CF.fxDur;fxs=fxs.filter(f=>now-f.t0<f.D);
-for(let i=0;i<64;i++)frame[i]=smp[i]?sc(base(i),i===sel?1:.5):i===sel?[60,60,80]:[12,12,18];
-for(const f of fxs){const t=now-f.t0,pr=Math.floor(f.i/8),pc=f.i%8,col=CF.fxCol==='main'?CF.main:CF.fxCol==='white'?[255,255,255]:smp[f.i]?base(f.i):[255,255,255],ph=(t%P)/P,k=(1-ph)*Math.min(1,(f.D-t)/300),rad=ph*9.6;
+let gb=false;for(let i=0;i<64;i++)frame[i]=CF.game&&smp[i]?[6,6,10]:smp[i]?sc(base(i),i===sel?1:.5):i===sel?[60,60,80]:[12,12,18];
+if(CF.game)for(const g of gids()){const q=gs(g),ix=grp(g)[q.n];
+if(CF.diff===2&&q.st==='wait'&&q.n>0&&now-q.tw>2000){q.n=0;q.tw=now;gmsg('Raté ! On reprend au début.');fxs.push({i:ix,t0:now,D:500,k:3});continue}
+if(q.st==='wait'&&ix!=null){frame[ix]=sc(base(ix),.8+.3*Math.sin(now/260));wv(ix,(now/(60000/bpm))%1,.6);gb=true}}
+if(CF.game&&GP){if(now>=GP.t0+GP.d*1000){GP=null;sp=[]}else{gb=true;conv(now)}}
+for(const f of fxs){const t=now-f.t0,pr=Math.floor(f.i/8),pc=f.i%8,col=CF.fxCol==='main'?CF.main:CF.fxCol==='white'?[255,255,255]:smp[f.i]?base(f.i):[255,255,255],ph=(t%P)/P,k=(f.k===0?1:1-ph)*Math.min(1,(f.D-t)/300),R=Math.max(Math.hypot(pr,pc),Math.hypot(pr,7-pc),Math.hypot(7-pr,pc),Math.hypot(7-pr,7-pc))+1.3,rad=f.k===0?(ph<.5?ph*2:2-ph*2)*R:ph*9.6;
 for(let i=0;i<64;i++){const dr=Math.floor(i/8)-pr,dc=i%8-pc;let a=0,cl=col;
 if(f.k===0)a=Math.max(0,1-Math.abs(Math.hypot(dr,dc)-rad)/1.3);
 else if(f.k===1)a=(dr===0||dc===0)&&Math.max(Math.abs(dr),Math.abs(dc))<=rad?1:0;
 else if(f.k===2){a=.9;cl=hsl((Math.hypot(dr,dc)*45+t*.4)%360,1,.5)}
 else a=.8;
 frame[i]=frame[i].map((v,j)=>Math.min(255,v+cl[j]*a*k))}}
-let busy=fxs.length>0;const cdEl=$('#cd');
-if(cd){const rem=cd.t0+cd.d-now;if(rem<=0){cd=null;if(cdEl)cdEl.textContent=''}else{const f=Math.min(1,rem/cd.d)*8;for(let c=0;c<8;c++){const k=Math.max(0,Math.min(1,f-c));if(k>0)frame[56+c]=hsl(f*15,1,.12+.38*k)}if(cdEl)cdEl.textContent='Fin dans '+Math.min(rem,cd.d).toFixed(1)+' s';busy=true}}
+let busy=fxs.length>0||gb;const gmEl=$('#gm');if(gmEl)gmEl.textContent=now<gmu?gmm:(CF.game?gstat():'');
 if(busy)render()},
-press(r,c,d){if(!d)return;ac();const i=r*8+c;sel=i;play(i);if(smp[i])lpRec(4,i);
+press(r,c,d){if(!d)return;ac();const i=r*8+c;const sg=smp[i];if(CF.game&&sg){const gg=sg.gid,q=gs(gg);if(q.st!=='wait'||grp(gg)[q.n]!==i)return;sel=i;gstart(gg,i);return}sel=i;play(i);
 {const sm=smp[i],D=sm?(sm.dur||sm.buf.duration-(sm.start||0))*1000:CF.fxDur;fxs.push({i,t0:performance.now(),D,k:CF.fxk===4?Math.random()*4|0:CF.fxk})}myInfo();render()}};
 function cfgSet(el){const k=el.dataset.cfg,t=el.type,v=t==='checkbox'?el.checked:t==='color'?h2r(el.value):t==='range'||t==='number'?+el.value:el.value;
-if(k==='padcol'){const s=smp[sel];if(s){s.col=v;dbPut(sel,meta(sel))}}
-else{CF[k]=k==='fxk'?+v:v;if(k==='segLen')CF.segLen=Math.min(8,Math.max(2,+v||5));saveCf()}
+if(k==='padcol'){const s=smp[sel];if(s){s.col=v;dbPut(K(sel),meta(sel))}}
+else{CF[k]=(k==='fxk'||k==='diff'||k==='ld')?+v:v;if(k==='game')gclear();if(k==='segLen')CF.segLen=Math.min(8,Math.max(2,+v||5));saveCf()}
 if(t==='range'&&el.nextElementSibling)el.nextElementSibling.textContent=v+(k==='segLen'?' s':' ms');render()}
 /* ---------- boucles ---------- */
-const LN=16,LP=[0,1,2].map(()=>({ev:[]}));
-let lsel=0,lt=null,lrec=false,lT0=0,lsd=.27,lpos=-1;
+/* ---------- looper (Sampler) ---------- */
+const LO={ev:[],len:0};let lst='idle',lt0=0,rt0=0,lcy=0,la=0,lto=null,lpos=-1;
 function hit(i,t=AC.currentTime){const r=i>>3,c=i&7;r<2?kit(r*8+c,t):r<4?bass((r-2)*8+c,t):r<6?psy((r-4)*8+c,t):keys((r-6)*8+c,t)}
-function lpUi(){document.querySelectorAll('#lp .lst i').forEach((e,k)=>e.classList.toggle('on',k===lpos));const c=$('#lcnt');if(c)c.textContent=LP[lsel].ev.length+' notes'}
-function lpStart(){lt&&lt.stop();ac();lsd=60/bpm/2;lT0=AC.currentTime+.08;let n=0;
-lt=timer(()=>{if(lT0+n*lsd<AC.currentTime-.2)n=Math.ceil((AC.currentTime-lT0)/lsd);while(lT0+n*lsd<AC.currentTime+.12){const t=lT0+n*lsd,p=n%LN;
-for(const e of LP[lsel].ev)if(Math.floor(e.s)===p){const tt=t+(e.s-p)*lsd;e.m?play(e.i,tt):hit(e.i,tt)}
-if(lrec&&p%2===0)tone(p%8===0?1500:1000,t,.03,'square',.05);
-later(t,()=>{if(lt){lpos=p;lpUi()}});n++}},25)}
-function lpStop(){lt&&lt.stop();lt=null;lpos=-1;lrec=false;lpUi()}
-function lpRec(m,i){if(!lrec||!lt)return;let p=(AC.currentTime-lT0)/lsd%LN;if(p<0)p+=LN;LP[lsel].ev.push({s:Math.round(p*2)/2%LN,m,i});lpUi()}
-function lpBar(){return`<div id="lp"><h2>Boucles</h2><div class="row">${LP.map((_,k)=>`<button class="b ${lsel===k?'on':''}" data-act="lsel" data-v="${k}">${k+1}</button>`).join('')}</div>
-<div class="row"><button class="b ${lt?'on':''}" data-act="lplay">${lt?'Stop':'Play'}</button><button class="b rec ${lrec?'on':''}" data-act="lrec">Record</button><button class="b" data-act="lclr">Vider la boucle</button><span id="lcnt" style="color:var(--mute);font-size:.9rem">${LP[lsel].ev.length} notes</span></div>
-<div class="lst">${'<i></i>'.repeat(LN)}</div></div>`}
-const M=[SA,SEQ,GAME,LI,MY];
+const lcTxt=()=>lst==='rec'?'● '+(AC?(AC.currentTime-rt0).toFixed(1):'0.0')+' s':LO.len?LO.len.toFixed(1)+' s · '+LO.ev.length+' notes':'vide';
+function lpUi(){document.querySelectorAll('#lp .lst i').forEach((e,k)=>e.classList.toggle('on',lst==='rec'?Math.floor((AC.currentTime-rt0)*2)%2===0:k===lpos));const c=$('#lcnt');if(c)c.textContent=lcTxt()}
+function loTimer(){lto&&lto.stop();lto=timer(loTick,25)}
+function loTick(){if(lst==='rec'){lpUi();return}if(lst!=='play'&&lst!=='over')return;
+const L=LO.len,now=AC.currentTime-lt0;if(lcy*L+la<now-.3){lcy=Math.floor(now/L);la=now-lcy*L}const hi=now+.15;
+for(;;){const b=lcy*L,end=Math.min(L,hi-b);if(end<=la)break;
+for(const e of LO.ev)if(e.t>=la&&e.t<end){const tt=lt0+b+e.t;e.m?play(e.i,tt):hit(e.i,tt)}
+if(end>=L){lcy++;la=0}else{la=end;break}}
+lpos=Math.floor((((now%L)+L)%L)/L*16);lpUi()}
+function loClear(){lst='idle';LO.ev=[];LO.len=0;lto&&lto.stop();lto=null;lpos=-1}
+function loRec(){ac();
+if(lst==='rec'){const d=AC.currentTime-rt0;if(d<.3||!LO.ev.length){loClear();return}LO.len=d;lt0=AC.currentTime;lcy=0;la=0;lst='play'}
+else{LO.ev=[];LO.len=0;rt0=AC.currentTime;lst='rec';lpos=-1}
+loTimer()}
+function loPlay(){if(!LO.len)return;ac();if(lst==='play'||lst==='over'){lst='stop';lto&&lto.stop();lto=null;lpos=-1}else{lt0=AC.currentTime+.05;lcy=0;la=0;lst='play';loTimer()}}
+function loOver(){if(!LO.len)return;ac();if(lst==='over')lst='play';else{if(lst!=='play'){lt0=AC.currentTime+.05;lcy=0;la=0;loTimer()}lst='over'}}
+function lpStop(){if(lst==='rec')loClear();else if(lst==='play'||lst==='over'){lst='stop';lto&&lto.stop();lto=null;lpos=-1}}
+function lpRec(m,i){if(lst==='rec')LO.ev.push({t:AC.currentTime-rt0,m,i});else if(lst==='over')LO.ev.push({t:(((AC.currentTime-lt0)%LO.len)+LO.len)%LO.len,m,i})}
+function lpBar(){const has=LO.len>0,pl=lst==='play'||lst==='over',ok=has&&lst!=='rec'?'':'disabled';
+return`<div id="lp"><h2>Looper</h2><p>${lst==='rec'?'Enregistrement… joue sur les pads, puis clique « Terminer » pour lancer la boucle.':has?'Boucle prête : arrête, relance ou superpose de nouveaux sons.':'Clique « Enregistrer », joue, puis « Terminer » : ta boucle tourne.'}</p>
+<div class="row"><button class="b rec ${lst==='rec'?'on':''}" data-act="lrec">${lst==='rec'?'■ Terminer':has?'● Nouveau':'● Enregistrer'}</button><button class="b ${pl?'on':''}" data-act="lplay" ${ok}>${pl?'■ Stop':'▶ Lecture'}</button><button class="b rec ${lst==='over'?'on':''}" data-act="lover" ${ok}>${lst==='over'?'Superposition…':'+ Superposer'}</button><button class="b" data-act="lclr" ${has||lst==='rec'?'':'disabled'}>Effacer</button></div>
+<div class="row"><span id="lcnt" style="color:var(--mute);font-size:.85rem">${lcTxt()}</span></div>
+<div class="lst">${'<i></i>'.repeat(16)}</div></div>`}
+/* ---------- live perf : clique en rythme, les lumières te guident ---------- */
+const WD=[[45,85,130],[30,60,100],[22,45,75]],LV={on:false,gid:null,notes:[],lo:0,fx:[],score:0,combo:0,max:0,cnt:{p:0,g:0,o:0,m:0},msg:'',msgT:0,sum:'',lead:1.2,t0:0,dur:0,src:null};
+const lcol=i=>hsl(i*37%360,1,.5),lvT=()=>AC.currentTime-(AC.outputLatency||0)-(AC.baseLatency||0)-LV.t0-CF.off/1000;
+function songs(){const m=new Map();BK.forEach(b=>b.forEach(s=>{if(s&&s.buf&&s.buf.duration>=10&&!m.has(s.gid))m.set(s.gid,{gid:s.gid,name:s.bn||s.name,buf:s.buf})}));return[...m.values()]}
+function pickPad(prev,m){const c=[];for(let q=0;q<64;q++)if(prev<0||Math.max(Math.abs((q>>3)-(prev>>3)),Math.abs((q&7)-(prev&7)))>=m)c.push(q);return c[Math.random()*c.length|0]}
+function chart(buf){const an=analyze(buf);if(!an.bpm)return null;const T=60/an.bpm,e=an.env,mean=an.mean,dur=buf.duration,N=[3,2,1][CF.ld],out=[];
+const at=t=>{const n=Math.round(t/.01);let a=0;for(let x=n-3;x<=n+3;x++)a+=e[x]||0;return a/7};
+const bs=[0,0,0,0];for(let k=0;;k++){const t=an.ph+k*T;if(t>dur-.6)break;bs[k&3]+=at(t)}
+const r=bs.indexOf(Math.max(...bs));let prev=-1,k=Math.ceil((.8-an.ph)/T);while((k-r)&3)k++;
+for(;;k+=4*N){const t=an.ph+k*T;if(t>dur-.6)break;if(at(t)>mean*.45){prev=pickPad(prev,3);out.push({t,i:prev,j:null})}}
+return out}
+function lvJudge(r,n,err){const q=LV;q.cnt[r]++;
+if(r==='m'){q.combo=0;q.msg='Raté';q.fx.push({i:n.i,t:performance.now(),c:[255,50,50],k:'m'})}
+else{q.combo++;q.max=Math.max(q.max,q.combo);q.score+={p:300,g:200,o:100}[r]*Math.min(4,1+Math.floor(q.combo/10));
+q.msg={p:'Parfait',g:'Bien',o:'Ok'}[r]+' · '+(err>0?'tard ':'tôt ')+Math.abs(Math.round(err))+' ms';
+q.fx.push({i:n.i,t:performance.now(),c:{p:[255,255,255],g:[80,255,140],o:[255,210,60]}[r],k:'h'})}
+q.msgT=performance.now()}
+function lvStart(){const sg=songs().find(x=>x.gid===LV.gid);if(!sg)return;ac();const ch=chart(sg.buf);
+if(!ch||ch.length<2){LV.sum=ch?'Musique trop courte pour cette difficulté.':'Impossible de trouver le rythme de cette musique.';setPanel();return}
+lvStop(true);const an=analyze(sg.buf),T=60/an.bpm;
+Object.assign(LV,{notes:ch,lo:0,fx:[],score:0,combo:0,max:0,cnt:{p:0,g:0,o:0,m:0},msg:'',sum:'',lead:Math.min(1.8,Math.max(.9,2*T)),dur:sg.buf.duration,t0:AC.currentTime+2.2});
+bpm=an.bpm;$('#bp').value=Math.round(bpm);$('#bl').textContent=Math.round(bpm);
+const so=AC.createBufferSource(),g=AC.createGain();so.buffer=sg.buf;so.connect(g);g.connect(MB);so.start(LV.t0);LV.src=so;LV.on=true;
+if(met){const kk=Math.ceil((AC.currentTime-LV.t0-an.ph)/T);metStart(LV.t0+an.ph+kk*T,kk)}
+setPanel();render()}
+function lvStop(quiet){try{LV.src&&LV.src.stop()}catch(e){}LV.src=null;const was=LV.on;LV.on=false;if(!quiet&&was){LV.sum='Arrêté.';setPanel()}}
+function lvEnd(){try{LV.src&&LV.src.stop()}catch(e){}LV.src=null;LV.on=false;const c=LV.cnt,n=LV.notes.length||1,acc=Math.round((c.p+.7*c.g+.4*c.o)/n*100),rk=acc>=95?'S':acc>=85?'A':acc>=70?'B':acc>=50?'C':'D';
+LV.sum=`Terminé · Score ${LV.score} · Précision ${acc}% · Rang ${rk} · Combo max ${LV.max}`;setPanel()}
+const LIVE={
+panel:()=>{const L=songs();if(L.length&&!L.some(x=>x.gid===LV.gid))LV.gid=L[0].gid;
+return`<h2>Live perf</h2><p>Appuie sur les pads en rythme avec la musique. Un anneau se resserre sur chaque pad à jouer et celui-ci s'allume pleinement sur le premier temps d'une mesure.</p>
+${L.length?`<div class="row"><label>Musique <select id="lsong">${L.map(x=>opt(x.gid,esc(x.name),LV.gid)).join('')}</select></label></div>`:`<p>Importe d'abord une musique (10 s ou plus) dans l'onglet Samples.</p>`}
+<div class="row"><label>Difficulté <select data-cfg="ld">${['Facile · un pad toutes les 3 mesures','Normal · un pad toutes les 2 mesures','Difficile · un pad à chaque mesure, fenêtre très serrée'].map((t,i)=>opt(i,t,CF.ld)).join('')}</select></label></div>
+<div class="row"><label>Décalage audio <input type="range" data-cfg="off" min="-150" max="150" step="5" value="${CF.off}"><output>${CF.off} ms</output></label></div>
+<div class="row"><button class="b ${LV.on?'on':''}" data-act="${LV.on?'lvstop':'lvstart'}" ${L.length?'':'disabled'}>${LV.on?'■ Arrêter':'▶ Lancer'}</button></div>
+<div class="big" id="lvst"></div><p id="lvj" style="min-height:1.3em;margin:6px 0 0;color:var(--ink);font-weight:650"></p>`},
+draw(){const now=performance.now();for(let i=0;i<64;i++)frame[i]=[4,4,8];
+if(LV.on){const T=lvT(),W=WD[CF.ld];if(T>LV.dur+1.2){lvEnd();return}
+while(LV.lo<LV.notes.length&&(LV.notes[LV.lo].j||T-LV.notes[LV.lo].t>W[2]/1000)){const n=LV.notes[LV.lo];if(!n.j){n.j='m';lvJudge('m',n,0)}LV.lo++}
+if(T<0){const f=((-T)%.55)/.55;for(const q of[27,28,35,36])ad(q,[255,255,255],(1-f)*.35)}
+let fu=true;for(let k=LV.lo;k<LV.notes.length;k++){const n=LV.notes[k],dt=n.t-T;if(dt>LV.lead)break;if(n.j)continue;
+const p=Math.max(0,1-dt/LV.lead),c=lcol(n.i),w=fu?1:.7;fu=false;
+if(dt>0){ad(n.i,c,(.12+.5*p)*w);ring(n.i,(dt/LV.lead)*3.2,.5*(.4+p)*w,c,.5)}else ad(n.i,c,1)}
+LV.fx=LV.fx.filter(f=>now-f.t<350);
+for(const f of LV.fx){const u=(now-f.t)/350;if(f.k==='h')ring(f.i,u*2.8,(1-u)*.9,f.c,.55);else ad(f.i,f.c,(1-u)*.5)}
+render()}
+const a=$('#lvst'),b=$('#lvj'),any=LV.cnt.p+LV.cnt.g+LV.cnt.o+LV.cnt.m>0;
+if(a)a.textContent=LV.on||any?`Score ${LV.score} · Combo ${LV.combo}`:'';
+if(b)b.textContent=LV.on?(lvT()<0?'Prépare-toi…':now-LV.msgT<1200?LV.msg:''):LV.sum},
+press(r,c,d){if(!d||!LV.on)return;ac();const i=r*8+c,T=lvT(),W=WD[CF.ld];let best=null,bd=9;
+for(let k=LV.lo;k<LV.notes.length;k++){const n=LV.notes[k];if(n.t-T>W[2]/1000)break;if(n.j||n.i!==i)continue;const e=Math.abs(n.t-T);if(e<bd){bd=e;best=n}}
+if(!best)return;const err=(T-best.t)*1000,a=Math.abs(err),res=a<=W[0]?'p':a<=W[1]?'g':'o';best.j=res;lvJudge(res,best,err);
+tone(res==='p'?2000:1500,AC.currentTime,.04,'triangle',.12)},
+leave(){lvStop(true)}};
+const M=[SA,SEQ,GAME,LI,MY,LIVE];
 /* ---------- rendu + matériel ---------- */
 const cells=[];let q=0;
 function render(){if(q)return;const f=()=>{q=0;M[mode].draw();paint()};q=document.hidden?setTimeout(f,40):requestAnimationFrame(f)}
 const pk=[];
 function paint(){frame.forEach((f,i)=>{const k=f[0]+","+f[1]+","+f[2];if(pk[i]===k)return;pk[i]=k;const b=cells[i],on=f[0]+f[1]+f[2]>0;b.style.background=on?`rgb(${f})`:'';b.style.boxShadow=on?`0 0 12px rgba(${f},.6)`:''});send()}
 const sent=[];
-function send(){if(!out)return;const m=[0xF0,0,0x20,0x29,2,0x0D,3],n0=m.length;
+let lastSend=0,sq2=0;
+function send(){if(!out)return;const nw=performance.now();if(nw-lastSend<33){if(!sq2)sq2=setTimeout(()=>{sq2=0;send()},34);return}lastSend=nw;const m=[0xF0,0,0x20,0x29,2,0x0D,3],n0=m.length;
 for(let i=0;i<64;i++){const f=frame[i],c=[f[0]>>1,f[1]>>1,f[2]>>1],k=c.join();if(sent[i]===k)continue;sent[i]=k;m.push(3,(i>>3)*10+11+(i&7),...c)}
-for(let k=0;k<5;k++){const on=k===mode,key=on?'on':'off';if(sent[64+k]===key)continue;sent[64+k]=key;m.push(3,91+k,...(on?[127,127,127]:[8,8,16]))}
-if(m.length===n0)return;m.push(0xF7);try{out.send(m)}catch(e){}}
-function setMode(m){M[mode].leave&&M[mode].leave();clockStop();if(m!==0&&m!==4)lpStop();mode=m;const gm=$('#gridMode');if(gm)gm.textContent=['SAMPLER','SEQUENCER','GAME','LIGHTS','SAMPLES'][m];document.querySelectorAll('#tabs [data-m]').forEach(b=>{const on=+b.dataset.m===m;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on)});setPanel();render()}
+for(let k=0;k<6;k++){const on=k===mode,key=on?'on':'off';if(sent[64+k]===key)continue;sent[64+k]=key;m.push(3,91+k,...(on?[127,127,127]:[8,8,16]))}
+if(m.length===n0)return;m.push(0xF7);outs.forEach(p=>{try{p.send(m)}catch(e){}})}
+function setMode(m){M[mode].leave&&M[mode].leave();clockStop();if(m!==0)lpStop();mode=m;const gm=$('#gridMode');if(gm)gm.textContent=['SAMPLER','SEQUENCER','GAME','LIGHTS','SAMPLES','LIVE PERF'][m];document.querySelectorAll('#tabs [data-m]').forEach(b=>{const on=+b.dataset.m===m;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on)});setPanel();render()}
 function setPanel(){$('#panel').innerHTML=M[mode].panel()}
 /* ---------- interface ---------- */
 const g=$('#g');let held=null;
@@ -364,20 +501,21 @@ b.onpointerenter=e=>{if(e.buttons&1&&M[mode].drag)M[mode].drag(r,c)};
 b.onkeydown=e=>{if((e.key===' '||e.key==='Enter')&&!e.repeat){e.preventDefault();ac();M[mode].press(r,c,true)}};
 b.onkeyup=e=>{if(e.key===' '||e.key==='Enter')M[mode].press(r,c,false)};g.appendChild(b)}
 ['pointerup','pointercancel'].forEach(ev=>addEventListener(ev,()=>{if(held){M[mode].press(held[0],held[1],false);held=null}}));
+const mb=$('#met');mb.onclick=()=>{met?metStop():metStart();mb.classList.toggle('on',!!met);mb.setAttribute('aria-pressed',!!met)};
 $('#tabs').onclick=e=>{const b=e.target.closest('[data-m]');if(b)setMode(+b.dataset.m)};
 $('#bp').oninput=e=>{bpm=+e.target.value;$('#bl').textContent=bpm};
-$('#bp').onchange=()=>{if(lt)lpStart()};
 function act(a,v){
 if(a==='imp'){$('#fi').click();return}
-if(a==='lsel'){lsel=+v;if(lt)lpStart()}
-else if(a==='lplay')lt?lpStop():lpStart();
-else if(a==='lrec'){lrec=!lrec;if(lrec&&!lt)lpStart()}
-else if(a==='lclr')LP[lsel].ev=[];
+if(['bank','rm','rmall','resplit'].includes(a))gclear();
+if(a==='lrec')loRec();
+else if(a==='lplay')loPlay();
+else if(a==='lover')loOver();
+else if(a==='lclr')loClear();
 else if(a==='rmall'){if(confirm('Retirer tous les sons des pads ?'))smp.forEach((s,i)=>{if(s)release(i)})}
 else if(a==='rm')release(sel);
 else if(a==='resplit')resplit();
-else if(a==='grp'){const s=smp[sel];if(s){const c=base(sel);smp.forEach((p,i)=>{if(p&&p.gid===s.gid){p.col=[...c];dbPut(i,meta(i))}})}}
-else if(a==='padreset'){const s=smp[sel];if(s){delete s.col;dbPut(sel,meta(sel))}}
+else if(a==='grp'){const s=smp[sel];if(s){const c=base(sel);smp.forEach((p,i)=>{if(p&&p.gid===s.gid){p.col=[...c];dbPut(K(i),meta(i))}})}}
+else if(a==='padreset'){const s=smp[sel];if(s){delete s.col;dbPut(K(sel),meta(sel))}}
 if(a==='play'){ck?(clockStop(),anim=-1,ph=-1):clockStart(M[mode].step)}
 else if(a==='clear')st.forEach(r=>r.fill(0));
 else if(a==='col')cc=+v;else if(a==='fr')cf=+v;
@@ -386,28 +524,33 @@ else if(a==='dup'){fr.splice(cf+1,0,[...fr[cf]]);cf++}
 else if(a==='del'&&fr.length>1){fr.splice(cf,1);cf=Math.min(cf,fr.length-1)}
 else if(a==='wipe')fr[cf].fill(0);
 else if(a==='mus')muse=!muse;
+else if(a==='bank'){bank=+v;smp=BK[bank];fxs=[];imsg=''}
+else if(a==='lvstart')lvStart();
+else if(a==='lvstop')lvStop();
 setPanel();render()}
 $('#panel').onclick=e=>{const b=e.target.closest('[data-act]');if(b)act(b.dataset.act,b.dataset.v)};
 /* ---------- Web MIDI ---------- */
-function onMidi(e){const[s,d1,d2]=e.data,t=s&0xF0;
+function onMidi(e){const[s,d1,d2]=e.data,t=s&0xF0,k=e.data.join(),n=performance.now();if(k===lastK&&n-lastT<15)return;lastK=k;lastT=n;
 if(t===0x90||t===0x80){const r=Math.floor(d1/10)-1,c=d1%10-1;if(r>=0&&r<8&&c>=0&&c<8){M[mode].press(r,c,t===0x90&&d2>0)}}
-else if(t===0xB0&&d2>0&&d1>=91&&d1<=95)setMode(d1-91)}
-let midi=null;
+else if(t===0xB0&&d2>0&&d1>=91&&d1<=96)setMode(d1-91)}
+let midi=null,outs=[],lastK='',lastT=0;
+const lpAll=m=>[...m.values()].filter(p=>/LPMiniMK3|Launchpad/i.test(p.name));
 const setSt=(t,ok)=>{$('#st').textContent=t;$('#dot').classList.toggle('ok',!!ok)};
 const lpPick=m=>{const l=[...m.values()],bad=/DAW|MIDIIN2|MIDIOUT2/i;return l.find(p=>/LPMiniMK3 MIDI|Launchpad Mini MK3/i.test(p.name)&&!bad.test(p.name))||l.find(p=>/LPMiniMK3|Launchpad/i.test(p.name)&&!bad.test(p.name))};
-function lpAttach(){const o=lpPick(midi.outputs),i=lpPick(midi.inputs);if(!o||!i)return false;
-out=o;i.onmidimessage=onMidi;sent.length=0;pk.length=0;try{out.send([0xF0,0,0x20,0x29,2,0x0D,0x0E,1,0xF7])}catch(e){}
+function lpAttach(){const os=lpAll(midi.outputs),is=lpAll(midi.inputs),o=lpPick(midi.outputs)||os[0];if(!o||!is.length)return false;
+outs=os;out=o;is.forEach(i=>{i.onmidimessage=onMidi});sent.length=0;pk.length=0;outs.forEach(p=>{try{p.send([0xF0,0,0x20,0x29,2,0x0D,0x0E,1,0xF7])}catch(e){}});
 setSt('Connecté : '+o.name,1);$('#cn').textContent='Reconnecter';render();return true}
 $('#cn').onclick=async()=>{
 try{ac();if(!midi){midi=await navigator.requestMIDIAccess({sysex:true});
-midi.onstatechange=()=>{const here=out&&[...midi.outputs.values()].some(p=>p.id===out.id&&p.state==='connected');
+midi.onstatechange=()=>{const here=out&&outs.some(o=>[...midi.outputs.values()].some(p=>p.id===o.id&&p.state==='connected'));
 if(out&&!here){out=null;setSt('Launchpad débranché : rebranche-le, il se reconnectera tout seul.',0)}else if(!out)lpAttach()}}
 if(!lpAttach())setSt('Launchpad introuvable : branche-le en USB puis réessaie.',0)}
 catch(err){setSt("Web MIDI indisponible ou refusé : utilise Chrome ou Edge et autorise l'accès.",0)}};
-addEventListener('pagehide',()=>{if(out)try{out.send([0xF0,0,0x20,0x29,2,0x0D,0x0E,0,0xF7])}catch(e){}});
+addEventListener('pagehide',()=>{if(out)outs.forEach(p=>{try{p.send([0xF0,0,0x20,0x29,2,0x0D,0x0E,0,0xF7])}catch(e){}})});
 $('#panel').oninput=e=>{const t=e.target;if(t.dataset.cfg&&/range|color/.test(t.type))cfgSet(t)};
 $('#panel').onchange=e=>{const t=e.target;
 if(t.id==='fi'){importFiles([...t.files],sel);t.value=''}
+else if(t.id==='lsong'){LV.gid=t.value;setPanel()}
 else if(t.dataset.cfg){cfgSet(t);if(t.type!=='range')setPanel()}};
 addEventListener('dragover',e=>e.preventDefault());
 addEventListener('drop',e=>{e.preventDefault();const fs=[...e.dataTransfer.files];if(!fs.length)return;if(mode!==4)setMode(4);importFiles(fs,sel)});
